@@ -122,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[allow(deprecated)]
     event_loop
         .run(move |_event, event_loop| {
-            event_loop.set_control_flow(ControlFlow::Poll);
+            event_loop.set_control_flow(ControlFlow::Wait);
             if let Ok(event) = menu_channel.try_recv() {
                 if event.id == quit_id {
                     let _ = tx.send(true);
@@ -197,20 +197,16 @@ fn recording_loop(
             .stderr(Stdio::null())
             .spawn()?;
 
-        let mut stdin =
-            BufWriter::with_capacity((width * height * 4) as usize, child.stdin.take().unwrap());
+        let mut stdin = child.stdin.take().unwrap();
 
         let mut next_frame_time = Instant::now();
         let mut last_ckey_state = false;
+        let mut last_key_poll = Instant::now();
 
         loop {
             let now = Instant::now();
             if now < next_frame_time {
-                let diff = next_frame_time - now;
-                if diff > Duration::from_millis(1) {
-                    thread::sleep(diff - Duration::from_millis(1));
-                }
-                while Instant::now() < next_frame_time {}
+                thread::sleep(next_frame_time - now);
             }
             next_frame_time += frame_duration;
 
@@ -224,20 +220,23 @@ fn recording_loop(
                 }
             }
 
-            let keys = device_state.get_keys();
-            if keys.contains(&Keycode::F1) && keys.contains(&Keycode::LControl) {
-                return Ok(());
+            if last_key_poll.elapsed() >= Duration::from_millis(20) {
+                let keys = device_state.get_keys();
+                if keys.contains(&Keycode::F1) && keys.contains(&Keycode::LControl) {
+                    return Ok(());
+                }
+
+                let capture_pressed = keys.contains(&key_code);
+                if capture_pressed && !last_ckey_state {
+                    break;
+                }
+                last_ckey_state = capture_pressed;
+                last_key_poll = Instant::now();
             }
 
             if rx.try_recv().is_ok() {
                 break 'main_loop;
             }
-
-            let capture_pressed = keys.contains(&key_code);
-            if capture_pressed && !last_ckey_state {
-                break;
-            }
-            last_ckey_state = capture_pressed;
         }
 
         drop(stdin);
