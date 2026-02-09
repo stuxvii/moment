@@ -1,21 +1,10 @@
 // #![windows_subsystem = "windows"]
 
-mod config {
-    use device_query::Keycode;
-    use std::sync::Mutex;
-
-    pub static KEY: Mutex<Keycode> = Mutex::new(Keycode::F10);
-    pub static FPS: Mutex<i32> = Mutex::new(60);
-    pub static KBPS: Mutex<i32> = Mutex::new(10000);
-    pub static TIME: Mutex<i32> = Mutex::new(10);
-    pub static ENCODER: Mutex<i32> = Mutex::new(0);
-}
-
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use dxgi_capture_rs::DXGIManager;
 use std::collections::HashMap;
 use std::fs::{self, File, remove_file};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::process::{self, Command, Stdio};
 use std::str::FromStr;
@@ -31,9 +20,17 @@ use tray_icon::{
 use win_msgbox::Okay;
 use winit::event_loop::{ControlFlow, EventLoop};
 
+struct CONFIG {
+    key: Keycode,
+    fps: i32,
+    kbps: i32,
+    time: i32,
+    encoder: i32,
+}
+
 const DEFAULT_CFG: &str = "{\"time\":10,\"fps\":60,\"kbps\":10000,\"key\":\"F10\", \"encoder\": 0}";
 
-fn load_settings() -> Result<(), Box<dyn std::error::Error>> {
+fn load_settings() -> Result<CONFIG, Box<dyn std::error::Error>> {
     let cfg_string = fs::read_to_string("ack.cfg").unwrap_or_else(|_| {
         let _ = fs::write("ack.cfg", DEFAULT_CFG);
         String::from(DEFAULT_CFG)
@@ -61,13 +58,7 @@ fn load_settings() -> Result<(), Box<dyn std::error::Error>> {
     let encoder = get_num("encoder")?;
     let key = get_str("key")?;
 
-    *crate::config::ENCODER.lock().unwrap() = encoder.clamp(0., 3.) as i32;
-    *crate::config::KEY.lock().unwrap() = Keycode::from_str(&key)?;
-    *crate::config::KBPS.lock().unwrap() = kbps as i32;
-    *crate::config::FPS.lock().unwrap() = fps as i32;
-    *crate::config::TIME.lock().unwrap() = time as i32;
-
-    Ok(())
+    Ok(CONFIG { key: Keycode::from_str(&key)?, fps: fps as i32, kbps: kbps as i32, time: time as i32, encoder: encoder.clamp(0., 3.) as i32 })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,13 +67,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeBeginPeriod(1);
     }
 
-    if let Err(e) = load_settings() {
-        let _ = win_msgbox::information::<Okay>(&format!("{}\nResetting config.", e))
-            .title("Configuration Error")
-            .show();
-        let _ = fs::write("ack.cfg", DEFAULT_CFG);
-        load_settings()?;
-    }
+    let config: CONFIG = match load_settings() {
+        Err(e) => {
+            let _ = win_msgbox::information::<Okay>(&format!("{}\nResetting config.", e))
+                .title("Configuration Error")
+                .show();
+            let _ = fs::write("ack.cfg", DEFAULT_CFG);
+            load_settings()?
+        },
+        Ok(c) => c,
+    };
 
     let manager = DXGIManager::new(100)?;
     let (width, height) = manager.geometry();
@@ -111,11 +105,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::new().unwrap();
 
     thread::spawn(move || {
-        if let Err(e) = recording_loop(rx, width as u32, height as u32, manager, device_state) {
-            let _ = win_msgbox::error::<Okay>(&e.to_string())
-                .title("Fatal Error")
-                .show();
-            process::exit(1);
+        let record = recording_loop(rx, width as u32, height as u32, manager, device_state, config);
+        match record {
+            Err(e) => {
+                let _ = win_msgbox::error::<Okay>(&e.to_string())
+                    .title("Fatal Error")
+                    .show();
+                process::exit(1);
+            },
+            Ok(_) => {
+                process::exit(0);
+            }
         }
     });
 
@@ -141,12 +141,13 @@ fn recording_loop(
     height: u32,
     mut manager: DXGIManager,
     device_state: DeviceState,
+    config: CONFIG
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let fps = *crate::config::FPS.lock().unwrap();
-    let kbps = *crate::config::KBPS.lock().unwrap();
-    let key_code = *crate::config::KEY.lock().unwrap();
-    let time_seg = *crate::config::TIME.lock().unwrap();
-    let enc_idx = *crate::config::ENCODER.lock().unwrap();
+    let fps = config.fps;
+    let kbps = config.kbps;
+    let key_code = config.key;
+    let time_seg = config.time;
+    let enc_idx = config.encoder;
 
     let encoder = match enc_idx {
         0 => "libx264",
@@ -210,12 +211,8 @@ fn recording_loop(
             }
             next_frame_time += frame_duration;
 
-            if let Ok((data, _)) = manager.capture_frame() {
-                let slice = unsafe {
-                    std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
-                };
-
-                if stdin.write_all(slice).is_err() {
+            if let Ok((data, _)) = manager.capture_frame_fast() {
+                if stdin.write_all(data.as_slice()).is_err() {
                     break;
                 }
             }
