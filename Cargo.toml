@@ -1,0 +1,33 @@
+[package]
+name = "moment"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_Media",
+] }
+dxgi-capture-rs = "1.1.7"
+device_query = "4.0.1"
+time = { version = "0.3", features = ["macros", "formatting", "local-offset"] }
+tray-icon = "0.21.3"
+winit = "0.30.12"
+win-msgbox = "0.2.2"
+tinyjson = "2.5.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+
+[build-dependencies]
+embed-resource = "2"
